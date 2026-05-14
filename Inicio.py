@@ -35,9 +35,9 @@ ORG    = 'TU_ORG'
 BUCKET = 'gasBUCKET'
 URL    = 'https://us-east-1-1.aws.cloud2.influxdata.com/'
 
-UMBRAL_CRITICO = 1000   # PPM — ajusta según tu sensor
-UMBRAL_MEDIO   = 2500   # PPM
-UMBRAL_LLENO   = 4000   # PPM — valor cuando pipeta llena
+UMBRAL_CRITICO = 1000
+UMBRAL_MEDIO   = 2500
+UMBRAL_LLENO   = 4000
 
 # ── Funciones ──────────────────────────────────────────────────────────
 @st.cache_resource
@@ -102,22 +102,44 @@ with st.sidebar:
 UMBRAL_CRITICO = umbral_usr
 
 # ── Cargar datos ───────────────────────────────────────────────────────
+serie = None
+
 with st.spinner('Cargando datos desde InfluxDB...'):
     try:
         serie = consultar_gas(horas)
-        usar_csv = False
     except Exception as e:
         st.warning(f'No se pudo conectar a InfluxDB: {e}')
-        st.info('Carga un CSV como alternativa:')
-        f = st.file_uploader('CSV con columnas Time, gas', type=['csv'])
-        if f:
-            df_raw = pd.read_csv(f)
-            df_raw['Time'] = pd.to_datetime(df_raw['Time'])
-            serie = df_raw.set_index('Time')['gas']
-        else:
-            st.stop()
-        usar_csv = True
 
+if serie is None:
+    st.info('Carga un CSV como alternativa:')
+    f = st.file_uploader('CSV con columnas Time y gas', type=['csv'])
+    if f:
+        df_raw = pd.read_csv(f)
+        # Limpiar nombres de columnas
+        df_raw.columns = df_raw.columns.str.strip()
+
+        # Detectar columna de tiempo
+        time_col = next((c for c in df_raw.columns
+                         if c.lower() in ['time', 'fecha', 'timestamp', 'datetime']), None)
+        if time_col:
+            df_raw[time_col] = pd.to_datetime(df_raw[time_col])
+            df_raw = df_raw.set_index(time_col)
+        else:
+            df_raw.index = pd.RangeIndex(len(df_raw))
+
+        # Detectar columna de gas
+        col_gas = next((c for c in df_raw.columns
+                        if 'gas' in c.lower()), None)
+        if col_gas is None:
+            col_gas = df_raw.columns[0]
+
+        st.info(f'Columna detectada: `{col_gas}`')
+        serie = df_raw[col_gas].dropna().astype(float)
+        serie.name = 'gas'
+    else:
+        st.stop()
+
+# ── Valores clave ──────────────────────────────────────────────────────
 ultimo  = float(serie.iloc[-1])
 pct, emoji, estado, color = nivel_pipeta(ultimo)
 dias    = estimar_dias(serie)
@@ -200,14 +222,19 @@ tab1, tab2, tab3, tab4 = st.tabs([
     '📉 Consumo', '📊 Estadísticas', '🔍 Filtros', '📍 Ubicación'
 ])
 
-# ── Tab 1: Consumo y comparación ───────────────────────────────────────
+# ── Tab 1: Consumo ─────────────────────────────────────────────────────
 with tab1:
     st.subheader('Historial de consumo')
 
-    franjas = serie.resample('30min').mean().dropna()
+    if isinstance(serie.index, pd.DatetimeIndex):
+        franjas = serie.resample('30min').mean().dropna()
+        labels  = franjas.index.strftime('%H:%M')
+    else:
+        franjas = serie
+        labels  = franjas.index.astype(str)
+
     fig_bar = px.bar(
-        x=franjas.index.strftime('%H:%M'),
-        y=franjas.values,
+        x=labels, y=franjas.values,
         labels={'x': 'Franja horaria', 'y': 'Gas promedio (PPM)'},
         color=franjas.values,
         color_continuous_scale=['#2ECC71', '#F39C12', '#E74C3C'][::-1],
@@ -227,11 +254,14 @@ with tab1:
     fig_tasa.update_layout(height=250, margin=dict(t=10))
     st.plotly_chart(fig_tasa, use_container_width=True)
 
-    if not tasa.dropna().empty:
-        idx_max = tasa.idxmax()
-        idx_min = tasa.idxmin()
-        st.info(f'⬆️ Mayor subida: `{idx_max.strftime("%H:%M:%S")}` → +{tasa[idx_max]:.2f} PPM/min')
-        st.info(f'⬇️ Mayor bajada: `{idx_min.strftime("%H:%M:%S")}` → {tasa[idx_min]:.2f} PPM/min')
+    tasa_clean = tasa.dropna()
+    if not tasa_clean.empty:
+        idx_max = tasa_clean.idxmax()
+        idx_min = tasa_clean.idxmin()
+        label_max = idx_max.strftime('%H:%M:%S') if isinstance(idx_max, pd.Timestamp) else str(idx_max)
+        label_min = idx_min.strftime('%H:%M:%S') if isinstance(idx_min, pd.Timestamp) else str(idx_min)
+        st.info(f'⬆️ Mayor subida: `{label_max}` → +{tasa_clean[idx_max]:.2f} PPM')
+        st.info(f'⬇️ Mayor bajada: `{label_min}` → {tasa_clean[idx_min]:.2f} PPM')
 
 # ── Tab 2: Estadísticas ────────────────────────────────────────────────
 with tab2:
@@ -239,12 +269,12 @@ with tab2:
     desc = serie.describe()
 
     c1, c2, c3 = st.columns(3)
-    c1.metric('Media',    f'{desc["mean"]:.2f} PPM')
-    c1.metric('Mediana',  f'{serie.median():.2f} PPM')
-    c2.metric('Máximo',   f'{desc["max"]:.2f} PPM')
-    c2.metric('Mínimo',   f'{desc["min"]:.2f} PPM')
-    c3.metric('Desv. std',f'{desc["std"]:.2f} PPM')
-    c3.metric('IQR',      f'{(desc["75%"] - desc["25%"]):.2f} PPM')
+    c1.metric('Media',     f'{desc["mean"]:.2f} PPM')
+    c1.metric('Mediana',   f'{serie.median():.2f} PPM')
+    c2.metric('Máximo',    f'{desc["max"]:.2f} PPM')
+    c2.metric('Mínimo',    f'{desc["min"]:.2f} PPM')
+    c3.metric('Desv. std', f'{desc["std"]:.2f} PPM')
+    c3.metric('IQR',       f'{(desc["75%"] - desc["25%"]):.2f} PPM')
 
     st.divider()
     st.subheader('Distribución')
@@ -262,6 +292,7 @@ with tab3:
 
     if mn == mx:
         st.warning('Todos los valores son iguales — sin variación para filtrar.')
+        st.dataframe(serie)
     else:
         rango = st.slider('Rango PPM', mn, mx, (mn, mx))
         filtrado = serie[(serie >= rango[0]) & (serie <= rango[1])]
