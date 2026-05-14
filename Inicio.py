@@ -30,8 +30,8 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ── Constantes ─────────────────────────────────────────────────────────
-TOKEN  = 'TU_TOKEN'
-ORG    = 'TU_ORG'
+TOKEN  = 'QXCo7Iznp0LkBZ_lt3y04mLIs1hElSgcuTqWrToLwF9YtayXiu4FhbjxuFALKPOj89ZEKSXP1jifWmrl6LPauA==
+ORG    = 'organinizaciondaniel'
 BUCKET = 'gasBUCKET'
 URL    = 'https://us-east-1-1.aws.cloud2.influxdata.com/'
 
