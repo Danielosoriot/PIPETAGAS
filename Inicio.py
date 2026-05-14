@@ -7,7 +7,6 @@ import plotly.graph_objects as go
 import plotly.express as px
 from influxdb_client import InfluxDBClient
 
-# ── Configuración de página ────────────────────────────────────────────
 st.set_page_config(
     page_title="Monitor de Pipeta de Gas",
     page_icon="🔥",
@@ -23,15 +22,11 @@ st.markdown("""
         text-align: center;
         border: 1px solid #333;
     }
-    .alerta-roja    { color: #E74C3C; font-size: 1.4rem; font-weight: bold; }
-    .alerta-amarilla{ color: #F39C12; font-size: 1.4rem; font-weight: bold; }
-    .alerta-verde   { color: #2ECC71; font-size: 1.4rem; font-weight: bold; }
     </style>
 """, unsafe_allow_html=True)
 
-# ── Constantes ─────────────────────────────────────────────────────────
-TOKEN  = 'QXCo7Iznp0LkBZ_lt3y04mLIs1hElSgcuTqWrToLwF9YtayXiu4FhbjxuFALKPOj89ZEKSXP1jifWmrl6LPauA=='
-ORG    = 'organinizaciondaniel'
+TOKEN  = 'TU_TOKEN'
+ORG    = 'TU_ORG'
 BUCKET = 'gasBUCKET'
 URL    = 'https://us-east-1-1.aws.cloud2.influxdata.com/'
 
@@ -39,7 +34,6 @@ UMBRAL_CRITICO = 1000
 UMBRAL_MEDIO   = 2500
 UMBRAL_LLENO   = 4000
 
-# ── Funciones ──────────────────────────────────────────────────────────
 @st.cache_resource
 def get_client():
     return InfluxDBClient(url=URL, token=TOKEN, org=ORG, verify_ssl=False)
@@ -57,7 +51,6 @@ def consultar_gas(horas=24):
         for record in tabla.records:
             tiempos.append(record.get_time())
             valores.append(record.get_value())
-
     idx = pd.DatetimeIndex(
         pd.to_datetime(pd.Series(tiempos), utc=True)
     ).tz_convert('America/Bogota')
@@ -79,13 +72,10 @@ def estimar_dias(serie):
     consumo_hora = (serie.iloc[0] - serie.iloc[-1]) / max(1, len(serie) / 60)
     if consumo_hora <= 0:
         return None
-    ultimo = serie.iloc[-1]
-    horas_restantes = (ultimo - UMBRAL_CRITICO) / consumo_hora
+    horas_restantes = (serie.iloc[-1] - UMBRAL_CRITICO) / consumo_hora
     return max(0, horas_restantes / 24)
 
-# ══════════════════════════════════════════════════════════════════════
-#  HEADER
-# ══════════════════════════════════════════════════════════════════════
+# ── Header ─────────────────────────────────────────────────────────────
 st.title('🔥 Monitor de Pipeta de Gas')
 st.caption('Universidad EAFIT · Sensor ESP32/MQ · InfluxDB Cloud')
 
@@ -104,59 +94,47 @@ UMBRAL_CRITICO = umbral_usr
 # ── Cargar datos ───────────────────────────────────────────────────────
 serie = None
 
-with st.spinner('Cargando datos desde InfluxDB...'):
-    try:
-        serie = consultar_gas(horas)
-    except Exception as e:
-        st.warning(f'No se pudo conectar a InfluxDB: {e}')
+try:
+    serie = consultar_gas(horas)
+except Exception:
+    pass  # silencioso
 
 if serie is None:
-    st.info('Carga un CSV como alternativa:')
-    f = st.file_uploader('CSV con columnas Time y gas', type=['csv'])
+    f = st.file_uploader('📂 Carga un CSV para comenzar', type=['csv'])
     if f:
         df_raw = pd.read_csv(f)
-        # Limpiar nombres de columnas
         df_raw.columns = df_raw.columns.str.strip()
 
-        # Detectar columna de tiempo
         time_col = next((c for c in df_raw.columns
                          if c.lower() in ['time', 'fecha', 'timestamp', 'datetime']), None)
         if time_col:
             df_raw[time_col] = pd.to_datetime(df_raw[time_col])
             df_raw = df_raw.set_index(time_col)
-        else:
-            df_raw.index = pd.RangeIndex(len(df_raw))
 
-        # Detectar columna de gas
         col_gas = next((c for c in df_raw.columns
                         if 'gas' in c.lower()), None)
         if col_gas is None:
             col_gas = df_raw.columns[0]
 
-        st.info(f'Columna detectada: `{col_gas}`')
         serie = df_raw[col_gas].dropna().astype(float)
         serie.name = 'gas'
     else:
         st.stop()
 
 # ── Valores clave ──────────────────────────────────────────────────────
-ultimo  = float(serie.iloc[-1])
+ultimo = float(serie.iloc[-1])
 pct, emoji, estado, color = nivel_pipeta(ultimo)
-dias    = estimar_dias(serie)
+dias   = estimar_dias(serie)
 
-# ══════════════════════════════════════════════════════════════════════
-#  FILA 1 — KPIs
-# ══════════════════════════════════════════════════════════════════════
+# ── KPIs ───────────────────────────────────────────────────────────────
 st.subheader('📊 Estado Actual')
 c1, c2, c3, c4 = st.columns(4)
-
-c1.metric('Lectura actual',  f'{ultimo:.0f} PPM',
+c1.metric('Lectura actual', f'{ultimo:.0f} PPM',
           delta=f'{ultimo - float(serie.mean()):.0f} vs promedio')
-c2.metric('Estado pipeta',   f'{emoji} {estado}')
-c3.metric('Nivel estimado',  f'{pct:.1f} %')
-c4.metric('Días restantes',  f'{dias:.1f} días' if dias else 'Sin datos')
+c2.metric('Estado pipeta',  f'{emoji} {estado}')
+c3.metric('Nivel estimado', f'{pct:.1f} %')
+c4.metric('Días restantes', f'{dias:.1f} días' if dias else 'Sin datos')
 
-# ── Alerta ─────────────────────────────────────────────────────────────
 if ultimo < UMBRAL_CRITICO:
     st.error('🚨 ¡ALERTA! Nivel de gas crítico — considera reemplazar la pipeta pronto.')
 elif pct < 60:
@@ -164,19 +142,17 @@ elif pct < 60:
 else:
     st.success('✅ Pipeta en buen estado.')
 
-# ══════════════════════════════════════════════════════════════════════
-#  FILA 2 — Gauge + Serie de tiempo
-# ══════════════════════════════════════════════════════════════════════
+# ── Gauge + Serie ──────────────────────────────────────────────────────
 col_gauge, col_serie = st.columns([1, 2])
 
 with col_gauge:
     st.subheader('🔋 Nivel visual')
     fig_gauge = go.Figure(go.Indicator(
-        mode   = 'gauge+number+delta',
-        value  = pct,
-        delta  = {'reference': 50},
-        title  = {'text': 'Nivel de Gas (%)'},
-        gauge  = {
+        mode  = 'gauge+number+delta',
+        value = pct,
+        delta = {'reference': 50},
+        title = {'text': 'Nivel de Gas (%)'},
+        gauge = {
             'axis'  : {'range': [0, 100]},
             'bar'   : {'color': color},
             'steps' : [
@@ -185,9 +161,9 @@ with col_gauge:
                 {'range': [60, 100],'color': '#d5f5e3'},
             ],
             'threshold': {
-                'line' : {'color': 'red', 'width': 4},
+                'line'     : {'color': 'red', 'width': 4},
                 'thickness': 0.75,
-                'value': 25
+                'value'    : 25
             }
         }
     ))
@@ -215,17 +191,13 @@ with col_serie:
     )
     st.plotly_chart(fig_ts, use_container_width=True)
 
-# ══════════════════════════════════════════════════════════════════════
-#  TABS
-# ══════════════════════════════════════════════════════════════════════
+# ── Tabs ───────────────────────────────────────────────────────────────
 tab1, tab2, tab3, tab4 = st.tabs([
     '📉 Consumo', '📊 Estadísticas', '🔍 Filtros', '📍 Ubicación'
 ])
 
-# ── Tab 1: Consumo ─────────────────────────────────────────────────────
 with tab1:
     st.subheader('Historial de consumo')
-
     if isinstance(serie.index, pd.DatetimeIndex):
         franjas = serie.resample('30min').mean().dropna()
         labels  = franjas.index.strftime('%H:%M')
@@ -256,18 +228,16 @@ with tab1:
 
     tasa_clean = tasa.dropna()
     if not tasa_clean.empty:
-        idx_max = tasa_clean.idxmax()
-        idx_min = tasa_clean.idxmin()
+        idx_max   = tasa_clean.idxmax()
+        idx_min   = tasa_clean.idxmin()
         label_max = idx_max.strftime('%H:%M:%S') if isinstance(idx_max, pd.Timestamp) else str(idx_max)
         label_min = idx_min.strftime('%H:%M:%S') if isinstance(idx_min, pd.Timestamp) else str(idx_min)
         st.info(f'⬆️ Mayor subida: `{label_max}` → +{tasa_clean[idx_max]:.2f} PPM')
         st.info(f'⬇️ Mayor bajada: `{label_min}` → {tasa_clean[idx_min]:.2f} PPM')
 
-# ── Tab 2: Estadísticas ────────────────────────────────────────────────
 with tab2:
     st.subheader('Estadísticos descriptivos')
     desc = serie.describe()
-
     c1, c2, c3 = st.columns(3)
     c1.metric('Media',     f'{desc["mean"]:.2f} PPM')
     c1.metric('Mediana',   f'{serie.median():.2f} PPM')
@@ -275,7 +245,6 @@ with tab2:
     c2.metric('Mínimo',    f'{desc["min"]:.2f} PPM')
     c3.metric('Desv. std', f'{desc["std"]:.2f} PPM')
     c3.metric('IQR',       f'{(desc["75%"] - desc["25%"]):.2f} PPM')
-
     st.divider()
     st.subheader('Distribución')
     fig_hist = px.histogram(serie, nbins=30, color_discrete_sequence=['#E74C3C'])
@@ -285,39 +254,32 @@ with tab2:
                        annotation_text='Mediana')
     st.plotly_chart(fig_hist, use_container_width=True)
 
-# ── Tab 3: Filtros ─────────────────────────────────────────────────────
 with tab3:
     st.subheader('Filtrar por rango de valores')
     mn, mx = float(serie.min()), float(serie.max())
-
     if mn == mx:
         st.warning('Todos los valores son iguales — sin variación para filtrar.')
         st.dataframe(serie)
     else:
-        rango = st.slider('Rango PPM', mn, mx, (mn, mx))
+        rango    = st.slider('Rango PPM', mn, mx, (mn, mx))
         filtrado = serie[(serie >= rango[0]) & (serie <= rango[1])]
         st.write(f'{len(filtrado)} registros en el rango seleccionado')
         st.line_chart(filtrado)
-
         csv = filtrado.reset_index().to_csv(index=False).encode('utf-8')
         st.download_button('⬇️ Descargar CSV filtrado', csv,
                            'gas_filtrado.csv', 'text/csv')
 
-# ── Tab 4: Mapa ────────────────────────────────────────────────────────
 with tab4:
     mapa_df = pd.DataFrame({'lat': [6.2006], 'lon': [-75.5783]})
     st.map(mapa_df, zoom=15)
     st.write('**Universidad EAFIT** · Medellín, Colombia')
     st.write('Sensor: ESP32 + MQ · Protocolo: MQTT → InfluxDB Cloud')
 
-# ══════════════════════════════════════════════════════════════════════
-#  AUTO-REFRESH
-# ══════════════════════════════════════════════════════════════════════
+# ── Auto-refresh ───────────────────────────────────────────────────────
 if auto_ref:
     st.caption('🔄 Actualizando en 30 segundos...')
     time.sleep(30)
     st.rerun()
 
-# ── Footer ─────────────────────────────────────────────────────────────
 st.divider()
 st.caption('Monitor de Pipeta de Gas · EAFIT · Medellín, Colombia')
